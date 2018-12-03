@@ -92,6 +92,39 @@ Copy your `Client ID` add `Secret`
 
 ![Copy your Client ID and Secret](gsuiteclient-3.png)
 
+### Configure Cognito
+
+If you don't already have a `Cognito User Pool` create one.
+![](cognito-1.png)
+
+Choose the domain name that Cognito will reserve for you. This is where your users will get directed to to login. (You can use your own domain, but is beyond the scope of this tutorial.)
+![](cognito-2.png)
+
+Pick your domain prefix. 
+
+**N.B.** The full domain needs to added the Google Developer Console as a permitted Callback location for your Oauth Web Client app.
+![](cognito-3.png)
+
+Configure Google as your identify provider. 
+Paste in your `Client ID` and `Secret` from Google here.
+![](cognito-4.png)
+
+Configure the ALB Endpoints for the Cognito Appl Client.
+![](cognito-5.png)
+
+If, for example, your test application is being hosted on `testapp.mycorp.com`. 
+
+Your Callback urls will be `https://testapp.mycorp.com,https://testapp.mycorp.com/oauth2/idpresponse`
+
+The `/oauth2/idpresponse` url is handled by the ALB internally and your app will not see these requests. 
+
+Your Sign out URL will be `https://testapp.mycorp.com`
+
+You can keep appending more ALBs and endpoints to this config later, comma separated.
+
+### Configure ALB
+
+### Configure Nginx
 
 To enable AWS JWT features in an application, firstly you will need nginx running.
 
