@@ -75,6 +75,17 @@ To follow along you will need:
 * A Google GSuite account and developer access
 * An AWS account with an ALB and a Cognito Pool
 * nginx with lua support
+* python3
+
+We're going to build a python3 sidecar AuthService that validates the JWT token and passes the validated headers back to nginx. Nginx will then forward those headers to your own application behind the ALB.
+
+The `AuthService` sidecar runs locally along side the Nginx instance and has strictly controlled timeouts. If the JWT authorisation is required and the service is down, nginx will serve a `503: Service Unavailable`.
+
+Below shows the standard request path for an initial login to a Cognito ALB.
+
+![Data flow diagram showing the interaction between the browser and components](./AWS-ALB-AuthFlow.png)
+
+**Nginx** and **AuthServices** are the two components we need to build to validate the JWT token.
 
 ### Creating GSuite OAuth2 Credentials
 
@@ -116,7 +127,7 @@ If, for example, your test application is being hosted on `testapp.mycorp.com`.
 
 Your Callback urls will be `https://testapp.mycorp.com,https://testapp.mycorp.com/oauth2/idpresponse`
 
-The `/oauth2/idpresponse` url is handled by the ALB internally and your app will not see these requests. 
+The `/oauth2/idpresponse` url is handled by the ALB internally and your app will not see these requests.
 
 Your Sign out URL will be `https://testapp.mycorp.com`
 
@@ -124,11 +135,26 @@ You can keep appending more ALBs and endpoints to this config later, comma separ
 
 ### Configure ALB
 
+Now we can configure the ALB to force authentication when accessing all or part of our Webapp.
+
+From this point on, the ALB *only* ensures that there a valid session with *any* Google account, even a personal one. There is no way to restrict which email domains to permit in Cognito.
+
 ### Configure Nginx
 
-To enable AWS JWT features in an application, firstly you will need nginx running.
+To enable AWS JWT features in an application, firstly you will need nginx running with lua support and the `resty.http` lua package available and this custom lua script:
 
-Add the following code to your location block:
+[nginx-aws-jwt.lua](nginx-aws-jwt.lua)
+
+Our code is configured and managed by puppet, so you will need to substitute some values with appropriate values (timeouts, valid_domains etc.)
+
+Inside your `http` configuration:
+
+```nginx
+lua_package_path "<<path_to_lua_packages>>/?.lua;;";
+```
+
+
+Add the following `access_by_lua` code to your location block:
 
 ```nginx
 location / {
@@ -139,9 +165,9 @@ location / {
 }
 ```
 
-auth_req defaults to true. If true, this will issue a 401 Access denied unless a valid AWS JWT token exists and the user's email address is from loveknitting.com or lovecrafts.com
+auth_req defaults to true. If true, this will issue a 401 Access denied unless a valid AWS JWT token exists and the user's email address is in the list of `valid_domains` e.g. (`mycorp.com, myparentcorp.com`)
 
-The false setting as show enables a soft launch, and will instrument the backend request if a valid JWT token is present, and other permit access as normal.
+The false setting as shown enables a soft launch, and will instrument the backend request if a valid JWT token is present, and otherwise permit access as normal.
 
 The only other parameter current supported is valid_domains. And should be used as such.
 
@@ -149,37 +175,12 @@ The only other parameter current supported is valid_domains. And should be used 
 location / {
     access_by_lua '
         local jwt = require("nginx-aws-jwt")
-        jwt.auth{valid_domains="loveknitting.com,lovecrafts.com,scalefactory.com"}
+        jwt.auth{valid_domains="mycorp.com,megacorp.com,myparentcorp.com"}
     ';
 }
 ```
 
-The above example would permit users from the three defined domains access, (ScaleFactory users should be permitted to access Jenkins/Grafana/Kibana/RunDeck etc).
-
-## Data flow
-
-The authservice sidecar runs locally along side the Nginx instance has strictly controlled timeouts. If the JWT authorisation is required and the service is down, nginx will serve a 503 Service Unavailable.
-
-Below shows the standard request path for an initial login to a cognito protected ALB.
-
-![Data flow diagramme showing the interaction between the browser and ](./AWS-ALB-AuthFlow.png)
-
-## Configuration
-
-### Google
-
-The Google App ID is currently this one:
-
-https://console.developers.google.com/apis/credentials?project=lovecrafts-backoffice&organizationId=782689515440
-
-The ClientID and Secret for each AWS Account/Region combo will need to be created and passed to the CloudFormation template for Cognito via a Parameter Store variable
-Cognito
-
-Cognito userpools will be configured by CloudFormation, there will be one pool per region and account.
-
-The Pool ID and Client ID will be exported for use in ALB Target configurations.
-
-The initial VPC deployment of the cognito user pools requires manual intervention (addition of domain and google client id + secret) before it is usable.
+The above example would permit any users from the three defined domains access.
 
 ### ALB
 
@@ -187,42 +188,7 @@ The ALB configuration should be include as normal in a CloudFormation Template.
 
 Currently CloudFormation doesn't support ALB authenticate-oidc or authenticate-cognito target types, so they will need to be updated manually after initial deployment.
 
-Luckily subsequent CloudFormation update do not overwrite Listener Target rules unless added or removed.
 
-## Console example (Temporary)
-
-Puppetry
-
-The role requiring the JWT Auth Service helper needs to include
-
-```puppet
-include ::lc_awsjwtauth
-```
-
-in the manifest.
-
-This will include all the dependencies and services.
-
-The relevant nginx config will need to modified in the location block to add:
-
-```nginx
-access_by_lua '
-    local jwt = require("nginx-aws-jwt")
-    jwt.auth{} '
-;
-```
-
-on which ever locations require authenticated access (normally location /{} )
-
-## Logging
-
-### Nginx
-
-The Nginx and Apache logs for the relevant service should be monitored as normal.
-
-If authentication is enabled the nginx error log for the service may contain extra logs when authentication fails.
-
-e.g.
 
 ```bash
 2018/06/14 12:54:50 [error] 26660#26660: *66 [lua] nginx-aws-jwt.lua:49: auth(): Invalid user/data in  X-Amzn-Oidc-Data header: No valid email domain, client: 192.168.33.11, server: only-smiles.loveknitting.com, request: "GET / HTTP/1.1", host: "only-smiles.loveknitting.com.dev.lovecrafts.cool"
