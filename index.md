@@ -1,14 +1,12 @@
-# Overview
+# Quick and easy BeyondCorp BackOffice access with ALBs, Cognito and Gsuite
 
-LoveCrafts have several services which are currently hosted behind a VPN.
+For some values for quick and easy.
 
-VPN access is managed via LDAP which is managed by Engineering/DevOps.
+## Overview
 
-Historically we have not been notified of company leavers in a timely fashion, which is a security hole, as VPN access (can) permit access to privileged resources within our hosting environment.
+LoveCrafts have several services which are currently hosted behind a VPN. VPN access is managed via LDAP which is managed by Engineering/DevOps.
 
-In June 2018 AWS announced the integration of Cognito and JWT Authorisation within their ALBs.
-
-This would allow any Web Based back office services to be put behind a public facing ALB with Cognito Authorisation via GSuite.
+Historically we have not been notified of company leavers in a timely fashion, which is an obvious security hole, as VPN access (can) permit access to privileged resources within our hosting environment.
 
 This includes but is not limited to
 
@@ -16,32 +14,49 @@ This includes but is not limited to
 * Kibana
 * Jenkins
 
-This probably equates to 90% of VPN traffic. Theoretically we should be able to get the required VPN services to be SSH/RDP only. And we should limit SSH access as much as possible with other tooling.
+For a while we had been discussing some kind of Single Sign On (SSO) system to manage access to all these disparate systems. We use Google GSuite for corporate mail and our Human Resources Team add and remove people as they join and leave, including contractors. So it seemed the obvious system to treat as our single source of truth (or as good as we have for now anyway).
+
+In June 2018 AWS announced the integration of Cognito and JWT Authorisation within their ALBs. <a name="ref1-return" ></a>[[1]](#ref1)
+
+This would allow any Web Based back office services to be put behind a public facing ALB with Cognito Authorisation via GSuite.
+
+This probably equates to 90% of our corporate VPN traffic. Theoretically we should be able to get the required VPN services to be used only for emergency SSH/RDP only. And we should limit SSH access as much as possible with other tooling.
 
 Integrating with GSuite gets LoveCrafts significantly closer to a full SSO
 Evaluation
 
-An ALB was configured in  account and added as a separate CNAME to an existing service.
+## Proof of concept
 
-A Google OAuth2 Client was configure and added to a Cognito User Pool in MGMT.
+A testing AWS account was choosen and we created
+
+* Cognito User Pool
+* Cognito App Client
+* Application Load Balancer (ALB)
+* Google OAuth2 Client Credentials
+
+The ALB was configured in a testing account and added as a separate CNAME to an existing service.
+
+The Google OAuth2 Client credentials were configured and added to the Cognito User Pool in the testing account.
 
 Enabling the authentication, all access to the ALB was directed to a Google auth page and redirected back to the ALB once sign in was complete.
 
 Transparent access worked fine, and a user was added to the Cognito Pool.
 
-## The Good
+Access was allowed to the protected resource.
+
+### The Good
 
 Works transparently without having to write any app specific code. Zero to up and running in ~5mins.
 
 AWS ALB passes the user profile data in a X-Amzn-Oidc-Data header that the app/nginx etc can access (although it is base64 encoded json)
 
-## The Bad
+### The Bad
 
 Any Google account permits access. (This service is designed to allow app developers to pass off user management to Google, Twitter, Facebook or any OAuth2/OpenID platform.)
 
 The App needs to validate JWT Token to prove authenticity of the X-Amzn-Oidc-Data header which leads onto....
 
-## The Ugly
+### The Ugly
 
 Initially it was relatively trivial to get Nginx to decode the X-Amzn-Oidc-Data Header, extract the Username/email/firstname/lastname and pass as separate headers to the downstream app.
 
@@ -49,11 +64,34 @@ However you should really check the signature of the JWT token to ensure it's va
 
 Amazon chose to use ES256 signatures for JWT, which the nginx lua library we've been using doesn't support. And I couldn't find anyone (except a Kong version of nginx) which did support any Elliptical Curve Crypto signatures.
 
-In the end I wrote a python sidecar to handle the JWT validation and userdata extraction. And encapsulated the functionality in a new lua extension for nginx.
+What follows is the deep-dive on the solution I ended up writing, a python sidecar to handle the JWT validation and userdata extraction and encapsulated the functionality in a new lua extension for nginx.
 
 Once/If the nginx lua implementation improves to support ES crypto this should be deprecated in favour of a fully lua based function.
 
-## Implementation
+## Full Implementation
+
+To follow along you will need:
+
+* A Google GSuite account and developer access
+* An AWS account with an ALB and a Cognito Pool
+* nginx with lua support
+
+### Creating GSuite OAuth2 Credentials
+
+Login into the [Google Developers Console](https://console.developers.google.com/apis/credentials) and create an app to use for authentication.
+
+Create OAuth Client Credentials for your app.
+
+![Create OAuth Client Credentials](gsuiteclient-1.png)
+
+Create a set of web application credentials.
+
+![Create set of web application credentials](gsuiteclient-2.png)
+
+Copy your `Client ID` add `Secret`
+
+![Copy your Client ID and Secret](gsuiteclient-3.png)
+
 
 To enable AWS JWT features in an application, firstly you will need nginx running.
 
@@ -91,7 +129,7 @@ The authservice sidecar runs locally along side the Nginx instance has strictly 
 
 Below shows the standard request path for an initial login to a cognito protected ALB.
 
-(AWS ALB Auth.png)
+![Data flow diagramme showing the interaction between the browser and ](./AWS-ALB-AuthFlow.png)
 
 ## Configuration
 
@@ -114,7 +152,7 @@ The initial VPC deployment of the cognito user pools requires manual interventio
 
 The ALB configuration should be include as normal in a CloudFormation Template.
 
-Currently CloudFormation doesn't support ALB authenticate-oidc or authenticate-cognite target types, so they will need to be updated manually after initial deployment.
+Currently CloudFormation doesn't support ALB authenticate-oidc or authenticate-cognito target types, so they will need to be updated manually after initial deployment.
 
 Luckily subsequent CloudFormation update do not overwrite Listener Target rules unless added or removed.
 
@@ -183,24 +221,11 @@ examples are:
 The Nginx metrics or downsteam app metrics should be monitored as normal and should be un-affected
 awsjstauth
 
-The authentication sidecar app generate statsd metrics published to the local statsd collected prefixed awsjwtauth
+The authentication sidecar app generate statsd metrics published to the local statsd collector prefixed with `awsjwtauth`
 
 This includes counts of error conditions and success methods, app restarts etc.
 
 It will also send timing information for it's only downstream dependency the AWS ALB Keyserver service.
-Dashboards
-
-WIll be provided once we have some services running them.
-Troubleshooting
-
-To enabled enhanced logging for your endpoint update the nginx configuration for the virtual host and add info level.
-
-e.g.
-
-```bash
-error_log  /var/log/nginx/only-smiles_loveknitting_error.log info;
-                                                             ^^^^
-```
 
 Post example data to your service (this work in dev/vagrant fine)
 
@@ -216,8 +241,8 @@ To inspect what was added to the backend request:
 ```bash
 sudo ngrep -q -W byline -d any '' dst port 8080
 ```
- 
-**Response below**
+
+Response below:
 
 ```bash
 T 192.168.33.11:9254 -> 192.168.33.11:8080 [AP]
@@ -244,10 +269,13 @@ If the validation fails or is not present the `X-Auth-*` Headers will not be pre
 
 ### AWS Documentation
 
+<a name="ref1" >[1]</a> - [[back]](#ref1-return) -
 https://aws.amazon.com/blogs/aws/built-in-authentication-in-alb/
 
+<a name="ref2" >[2]</a> - [[back]](#ref2-return) - 
 https://docs.aws.amazon.com/cognito/latest/developerguide/developer-authenticated-identities.html
 
+<a name="ref3" >[3]</a> - [[back]](#ref3-return) - 
 https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html
 
 Google OpenID Parameters:
