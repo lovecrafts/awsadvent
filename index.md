@@ -227,17 +227,43 @@ ${DAEMON} --pid ${PID_FILE} ${ARGS}
 
 ## Confirming it all works
 
+Well the obvious thing first, hitting the ALBs DNS name, should get you sent to authenticate to Google and then redirect you back to your test application.
+
+In our setup nginx is proxypassing to our test app.
+
+From our instance we can run:
+
 ```bash
-2018/06/14 12:54:50 [error] 26660#26660: *66 [lua] nginx-aws-jwt.lua:49: auth(): Invalid user/data in  X-Amzn-Oidc-Data header: No valid email domain, client: 192.168.33.11, server: only-smiles.loveknitting.com, request: "GET / HTTP/1.1", host: "only-smiles.loveknitting.com.dev.lovecrafts.cool"
+ngrep -d any -qW byline '' dst port 3000
+
+T 127.0.0.1:60634 -> 127.0.0.1:3000 [AP]
+GET /favicon.ico HTTP/1.1.
+Host: testapp.example.com.
+X-Forwarded-Host: testapp.example.com.
+X-Forwarded-Port: 443.
+X-Forwarded-Proto: https.
+X-Forwarded-For: 123.123.123.123
+X-Amzn-Trace-Id: Root=1-12345678-1234567890123456789012345.
+X-Amzn-Oidc-Data: <Base64 encoded json key/signer details>.<Base64 encoded json profile data>.<signature>.
+X-Amzn-Oidc-Identity: 55cf11c1-1234-1234-1234-68eaaa646dbb.
+X-Amzn-Oidc-Accesstoken: <Base64 JWT Token Redacted>
+user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:63.0) Gecko/20100101 Firefox/63.0.
+accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8.
+accept-language: en-US,en;q=0.5.
+accept-encoding: gzip, deflate, br.
+X-LC-Sid: 123412345123457114928da7eab8a01eda6ca38.
+X-LC-Rid: 12341234512345824900d3fc4554225bd338edc4.
+X-Auth-Family-name: Brockhurst.
+X-Auth-Email: bob@mycorp.com.
+X-Auth-Given-name: Bob.
+X-Auth-Picture: https://lh5.googleusercontent.com/-12345678901/AAAAAAAAAAA/AAAAAAAAAAA/123-123434556/123-1/photo.jpg.
 ```
 
-### awsjwtauth sidecar service
+If the validation fails or is not present the `X-Auth-*` Headers will not be present.This assumes you've set `auth=false` making auth optional.
 
-The AWS JWT service logs are contained at
+If `auth=true` on a validation failure or missing `X-Amzn-Oidc-Data` then nginx will return `401` and no request is made to the proxypass.
 
-/var/log/lovecrafts/awsjwtauth/app.log
-
-examples are:
+And a quick look at the logs
 
 ```bash
 [2018-06-14 13:24:53,367] [WARNING] Unauthorised access by: personal_email@gmail.com
@@ -258,43 +284,7 @@ This includes counts of error conditions and success methods, app restarts etc.
 
 It will also send timing information for it's only downstream dependency the AWS ALB Keyserver service.
 
-Post example data to your service (this work in dev/vagrant fine)
-
-```bash
-curl -v https://only-smiles.loveknitting.com.dev.lovecrafts.cool/ \
-  -H 'X-Amzn-Oidc-Data: eyJ0eXAiOiJKV1QiLCJraWQiOiJhYTQwY2Q0YS00YmEyLTQyOTMtYmZlMy1kM2ZmMmViZjgxYWIiLCJhbGciOiJFUzI1NiIsImlzcyI6Imh0dHBzOi8vY29nbml0by1pZHAuZXUtd2VzdC0xLmFtYXpvbmF3cy5jb20vZXUtd2VzdC0xX1dhc0RvRU5aZiIsImNsaWVudCI6IjFub3Iwa3NtMDhrcnFuOGtlcGcxZWFhNHVmIiwic2lnbmVyIjoiYXJuOmF3czplbGFzdGljbG9hZGJhbGFuY2luZzpldS13ZXN0LTE6NDcyNzg2NDA0OTE1OmxvYWRiYWxhbmNlci9hcHAvYXV0aC10ZXN0LzJjYzEwY2Y2ODFiYjQ0MDEiLCJleHAiOjE1Mjg0Njg0NDl9.eyJzdWIiOiI3MjNmZGY3Ni1iYTliLTQ2MTUtYjdmYi1jMjM4MjliYTkzZGQiLCJpZGVudGl0aWVzIjoiW3tcInVzZXJJZFwiOlwiMTEwMDI1MjMxMTIzOTE0NzUyNjkwXCIsXCJwcm92aWRlck5hbWVcIjpcIkdvb2dsZVwiLFwicHJvdmlkZXJUeXBlXCI6XCJHb29nbGVcIixcImlzc3VlclwiOm51bGwsXCJwcmltYXJ5XCI6dHJ1ZSxcImRhdGVDcmVhdGVkXCI6MTUyODQ2ODA2MDg5MX1dIiwiZ2l2ZW5fbmFtZSI6IkJvYiIsImZhbWlseV9uYW1lIjoiQnJvY2todXJzdCIsImVtYWlsIjoiYm9iQGxvdmVrbml0dGluZy5jb20iLCJwaWN0dXJlIjoiaHR0cHM6Ly9saDUuZ29vZ2xldXNlcmNvbnRlbnQuY29tLy1XYmVvc0Y1Y0Z1Zy9BQUFBQUFBQUFBSS9BQUFBQUFBQUFCVS9hSWYtS29Ybmx2OC9zOTYtYy9waG90by5qcGciLCJ1c2VybmFtZSI6Ikdvb2dsZV8xMTAwMjUyMzExMjM5MTQ3NTI2OTAifQ==.O2Z5DorTvpXHq/ICDytR85aWgcRvDj4ae3TKf35JfwADcHa7sbFpLADZqcF7K5ahln7zw1W7YZG+ZnFc4LNorw=='
-```
-
-The response should be shown as normal.
-
-To inspect what was added to the backend request:
-
-```bash
-sudo ngrep -q -W byline -d any '' dst port 8080
-```
-
-Response below:
-
-```bash
-T 192.168.33.11:9254 -> 192.168.33.11:8080 [AP]
-GET / HTTP/1.1.
-Host: only-smiles.loveknitting.com.dev.lovecrafts.cool.
-X-Forwarded-For: 192.168.33.11.
-X-Forwarded-Proto: https.
-X-Forwarded-Port: 443.
-User-Agent: curl/7.47.1.
-Accept: */*.
-X-Amzn-Oidc-Data: eyJ0eXAiOiJKV1QiLCJraWQiOiJhYTQwY2Q0YS00YmEyLTQyOTMtYmZlMy1kM2ZmMmViZjgxYWIiLCJhbGciOiJFUzI1NiIsImlzcyI6Imh0dHBzOi8vY29nbml0by1pZHAuZXUtd2VzdC0xLmFtYXpvbmF3cy5jb20vZXUtd2VzdC0xX1dhc0RvRU5aZiIsImNsaWVudCI6IjFub3Iwa3NtMDhrcnFuOGtlcGcxZWFhNHVmIiwic2lnbmVyIjoiYXJuOmF3czplbGFzdGljbG9hZGJhbGFuY2luZzpldS13ZXN0LTE6NDcyNzg2NDA0OTE1OmxvYWRiYWxhbmNlci9hcHAvYXV0aC10ZXN0LzJjYzEwY2Y2ODFiYjQ0MDEiLCJleHAiOjE1Mjg0Njg0NDl9.eyJzdWIiOiI3MjNmZGY3Ni1iYTliLTQ2MTUtYjdmYi1jMjM4MjliYTkzZGQiLCJpZGVudGl0aWVzIjoiW3tcInVzZXJJZFwiOlwiMTEwMDI1MjMxMTIzOTE0NzUyNjkwXCIsXCJwcm92aWRlck5hbWVcIjpcIkdvb2dsZVwiLFwicHJvdmlkZXJUeXBlXCI6XCJHb29nbGVcIixcImlzc3VlclwiOm51bGwsXCJwcmltYXJ5XCI6dHJ1ZSxcImRhdGVDcmVhdGVkXCI6MTUyODQ2ODA2MDg5MX1dIiwiZ2l2ZW5fbmFtZSI6IkJvYiIsImZhbWlseV9uYW1lIjoiQnJvY2todXJzdCIsImVtYWlsIjoiYm9iQGxvdmVrbml0dGluZy5jb20iLCJwaWN0dXJlIjoiaHR0cHM6Ly9saDUuZ29vZ2xldXNlcmNvbnRlbnQuY29tLy1XYmVvc0Y1Y0Z1Zy9BQUFBQUFBQUFBSS9BQUFBQUFBQUFCVS9hSWYtS29Ybmx2OC9zOTYtYy9waG90by5qcGciLCJ1c2VybmFtZSI6Ikdvb2dsZV8xMTAwMjUyMzExMjM5MTQ3NTI2OTAifQ==.O2Z5DorTvpXHq/ICDytR85aWgcRvDj4ae3TKf35JfwADcHa7sbFpLADZqcF7K5ahln7zw1W7YZG+ZnFc4LNorw==.
-X-LC-Sid: 0853f9337e43939dd9f9958d52e1e7071f0dbd0f.
-X-LC-Rid: 32b7a250d44e9c354f2ebedbebf58c5de4f19767.
-X-Auth-Family-name: Brockhurst.
-X-Auth-Email: bob@loveknitting.com.
-X-Auth-Given-name: Bob.
-X-Auth-Picture: https://lh5.googleusercontent.com/-WbeosF5cFug/AAAAAAAAAAI/AAAAAAAAABU/aIf-KoXnlv8/s96-c/photo.jpg.
-.
-```
-
-If the validation fails or is not present the `X-Auth-*` Headers will not be present.
+![Example Grafana Dashboard](monitoring.png)
 
 ## References
 
