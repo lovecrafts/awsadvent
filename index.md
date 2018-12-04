@@ -22,12 +22,14 @@ This would allow any Web Based back office services to be put behind a public fa
 
 This probably equates to 90% of our corporate VPN traffic. Theoretically we should be able to get the required VPN services to be used only for emergency SSH/RDP only. And we should limit SSH access as much as possible with other tooling.
 
-Integrating with GSuite gets LoveCrafts significantly closer to a full SSO
-Evaluation
+Integrating with GSuite gets LoveCrafts significantly closer to a full SSO.
+
+_Caveat Developer_:
+The following code and examples have been reverse engineered from our code and infrastucture. The examples should work if you attempt to use them, but we deploy with puppet. I've attempted to make them work standalone but there may be some inconsistencies.
 
 ## Proof of concept
 
-A testing AWS account was choosen and we created
+A test AWS account was choosen and we created
 
 * Cognito User Pool
 * Cognito App Client
@@ -42,7 +44,7 @@ Enabling the authentication, all access to the ALB was directed to a Google auth
 
 Transparent access worked fine, and a user was added to the Cognito Pool.
 
-Access was allowed to the protected resource.
+Access was allowed to the protected resource once authenticate, or presented a Google Authetication page.
 
 ### The Good
 
@@ -66,9 +68,13 @@ Amazon chose to use ES256 signatures for JWT, which the nginx lua library we've 
 
 What follows is the deep-dive on the solution I ended up writing, a python sidecar to handle the JWT validation and userdata extraction and encapsulated the functionality in a new lua extension for nginx.
 
-Once/If the nginx lua implementation improves to support ES crypto this should be deprecated in favour of a fully lua based function.
+Once/If the nginx lua implementation improves to support ES crypto this could be deprecated in favour of a fully lua based function.
 
-## Full Implementation
+The python app runs under gunicorn. It needs to be run under python3, as again, python2 doesn't have support for the crypto libraries in use.
+
+Using a python app does also allow you to expand the features and add group memberships from a LDAP service, for example, as extra headers.
+
+## Our Implementation
 
 To follow along you will need:
 
@@ -77,9 +83,10 @@ To follow along you will need:
 * nginx with lua support
 * python3
 
-We're going to build a python3 sidecar AuthService that validates the JWT token and passes the validated headers back to nginx. Nginx will then forward those headers to your own application behind the ALB.
+We're going to build a python3 sidecar AuthService that validates the JWT token and passes the validated headers back to nginx. Nginx will then forward those headers to your own application behind the ALB. The application does not need to know anything about how the authentication is done, and could even be a static site.
+Applications such as Grafana and Jenkins can use the Proxy Headers as a trusted identity.
 
-The `AuthService` sidecar runs locally along side the Nginx instance and has strictly controlled timeouts. If the JWT authorisation is required and the service is down, nginx will serve a `503: Service Unavailable`.
+The `AuthService` sidecar runs locally along side the Nginx instance and has strictly controlled timeouts. If the JWT authorisation is required and the service is down, nginx will serve a `503: Service Unavailable`. If the user is authenticated but not in the list of approved domains, the nginx will serve a `401: Access denied`.
 
 Below shows the standard request path for an initial login to a Cognito ALB.
 
@@ -127,7 +134,7 @@ If, for example, your test application is being hosted on `testapp.mycorp.com`.
 
 Your Callback urls will be `https://testapp.mycorp.com,https://testapp.mycorp.com/oauth2/idpresponse`
 
-The `/oauth2/idpresponse` url is handled by the ALB internally and your app will not see these requests.
+The `/oauth2/idpresponse` url is handled by the ALB internally and your app will not see these requests.<a name="ref2-return" ></a>[[2]](#ref2)
 
 Your Sign out URL will be `https://testapp.mycorp.com`
 
@@ -137,11 +144,20 @@ You can keep appending more ALBs and endpoints to this config later, comma separ
 
 Now we can configure the ALB to force authentication when accessing all or part of our Webapp.
 
+On your ALB, select the listeners tab and edit the rules for the HTTPS listener (you can **only** config this for https).
+
+![Add the cognito pool and app client to the ALB authenticate config](alb-1.png)
+
+The `Cognito user pool` is from our previous step, and the `App client` is the client configured within the Cognito User Pool.
+
+I reduce the `Session timeout` down to approximately 12 hours, as the default is 7 days.
+
 From this point on, the ALB *only* ensures that there a valid session with *any* Google account, even a personal one. There is no way to restrict which email domains to permit in Cognito.
+
 
 ### Configure Nginx
 
-To enable AWS JWT features in an application, firstly you will need nginx running with lua support and the `resty.http` lua package available and this custom lua script:
+You will need nginx running with lua support and the `resty.http` lua package available as well as this custom lua script:
 
 [nginx-aws-jwt.lua](nginx-aws-jwt.lua)
 
@@ -165,9 +181,9 @@ location / {
 }
 ```
 
-auth_req defaults to true. If true, this will issue a 401 Access denied unless a valid AWS JWT token exists and the user's email address is in the list of `valid_domains` e.g. (`mycorp.com, myparentcorp.com`)
+auth_req defaults to true. If true, this will issue a `401: Access denied` unless a valid AWS JWT token exists and the user's email address is in the list of `valid_domains` e.g. (`mycorp.com, myparentcorp.com`)
 
-The false setting as shown enables a soft launch, and will instrument the backend request if a valid JWT token is present, and otherwise permit access as normal.
+The false setting, as shown, enables a soft launch and will instrument the backend request with extra headers if a valid JWT token is present and otherwise permit access as normal.
 
 The only other parameter current supported is valid_domains. And should be used as such.
 
@@ -182,13 +198,34 @@ location / {
 
 The above example would permit any users from the three defined domains access.
 
-### ALB
+### Starting the sidecar JWT validator
 
-The ALB configuration should be include as normal in a CloudFormation Template.
+The python app is tested on python3.6 with the following pip packages
 
-Currently CloudFormation doesn't support ALB authenticate-oidc or authenticate-cognito target types, so they will need to be updated manually after initial deployment.
+```bash
+cryptography==2.4.2
+gunicorn==19.8.1
+PyJWT==1.6.4
+requests==2.20.1
+statsd==3.3.0
+```
 
+gunicorn was launched with the following [gunicorn.ini](gunicorn.ini) file with the commands
 
+```bash
+#!/bin/bash
+PROG="gunicorn-3.6"
+INSTANCE="awsjwtauth"
+DAEMON=/usr/bin/${PROG}
+PID_FILE=/var/run/${PROG%%-*}/${INSTANCE}.pid
+
+APP=app:app
+ARGS="--config /etc/gunicorn/awsjwtauth.ini --env LOG_LEVEL=debug --env REGION=eu-west-1 --env LOGFILE=/var/log/lovecrafts/awsjwtauth/app.log ${APP}"
+
+${DAEMON} --pid ${PID_FILE} ${ARGS}
+```
+
+## Confirming it all works
 
 ```bash
 2018/06/14 12:54:50 [error] 26660#26660: *66 [lua] nginx-aws-jwt.lua:49: auth(): Invalid user/data in  X-Amzn-Oidc-Data header: No valid email domain, client: 192.168.33.11, server: only-smiles.loveknitting.com, request: "GET / HTTP/1.1", host: "only-smiles.loveknitting.com.dev.lovecrafts.cool"
@@ -215,12 +252,7 @@ examples are:
 
 ## Monitoring
 
-### Nginx / Webapp
-
-The Nginx metrics or downsteam app metrics should be monitored as normal and should be un-affected
-awsjstauth
-
-The authentication sidecar app generate statsd metrics published to the local statsd collector prefixed with `awsjwtauth`
+Apart from normal nginx monitoring, the authentication sidecar app generates statsd metrics published to the local statsd collector prefixed with `awsjwtauth`
 
 This includes counts of error conditions and success methods, app restarts etc.
 
@@ -271,12 +303,4 @@ If the validation fails or is not present the `X-Auth-*` Headers will not be pre
 <a name="ref1" >[1]</a> - [[back]](#ref1-return) -
 https://aws.amazon.com/blogs/aws/built-in-authentication-in-alb/
 
-<a name="ref2" >[2]</a> - [[back]](#ref2-return) - 
-https://docs.aws.amazon.com/cognito/latest/developerguide/developer-authenticated-identities.html
-
-<a name="ref3" >[3]</a> - [[back]](#ref3-return) - 
-https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html
-
-Google OpenID Parameters:
-
-https://accounts.google.com/.well-known/openid-configuration
+<a name="ref2" >[2]</a> - [[back]](#ref2-return) - https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html
