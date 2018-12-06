@@ -1,4 +1,4 @@
-# Quick and easy BeyondCorp BackOffice access with ALBs, Cognito and Gsuite
+# Quick and easy BeyondCorp BackOffice access with ALBs, Cognito and GSuite
 
 For some values of quick and easy.
 
@@ -25,7 +25,7 @@ This probably equates to 90% of our corporate VPN traffic. Theoretically we shou
 Integrating with GSuite gets LoveCrafts significantly closer to a full SSO.
 
 _Caveat Developer_:
-The following code and examples have been reverse engineered from our code and infrastucture. The examples should work if you attempt to use them, but we deploy with puppet. I've attempted to make them work standalone but there may be some inconsistencies.
+Google GSuite is being used here, but Cognito supports multiple Oauth2 sources, including Amazon, Facebook, OpenID or indeed any Oauth2/SAML provider.  We're using Google here as it fits the corporate management for us. The following code has been reverse engineered from our infrastucture code.  The examples shown should work if you attempt to use them, but we manage them with puppet so I've attempted to make them work standalone but there may be some inconsistencies.
 
 ## Initial Proof of concept
 
