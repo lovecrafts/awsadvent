@@ -25,7 +25,7 @@ This probably equates to 90% of our corporate VPN traffic. Theoretically, we sho
 Integrating with GSuite gets LoveCrafts significantly closer to a full SSO.
 
 _Caveat Developer_:
-Google GSuite is being used here, but Cognito supports multiple OAuth2 sources, including Amazon, Facebook, OpenID or indeed any OAuth2/SAML provider.  We're using Google here as it fits the corporate management for us. (jennifer -- the previous sentence isn't clear to me.) 
+Google GSuite is being used here, but Cognito supports multiple OAuth2 sources, including Amazon, Facebook, OpenID or indeed any OAuth2/SAML provider.
 
 The following code has been reverse engineered from our puppet managed configuration. I have modified these to work without puppet, but there may be some inconsistencies to the following examples.
 
@@ -316,6 +316,6 @@ https://aws.amazon.com/blogs/aws/built-in-authentication-in-alb/
 
 ## About the Author
 
-Andy 'Bob' Brockhurst ([@b3cft](https://twitter.com/b3cft)) is the Head of Infrasructure Architecture and Security at LoveCrafts Collective, a combination of social network, digital marketplace, online media, and e-commerce site to deliver everything makers need to celebrate, share advice and buy supplies for there craft.
+Andy 'Bob' Brockhurst ([@b3cft](https://twitter.com/b3cft)) is the Head of Infrasructure Architecture and Security at LoveCrafts Collective, a combination of social network, digital marketplace, online media, and e-commerce site to deliver everything makers need to celebrate, share advice and buy supplies for their craft.
 
 Bob has worked `with computers` for more than 25 years including many years at The BBC and Yahoo!, and is finding it increasingly difficult to explain to his family what he actually does for a living.
